@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import {
   ArrowLeft, ChevronLeft, ChevronRight, BookOpen,
@@ -7,7 +7,7 @@ import {
   AlignLeft, BookMarked, Home
 } from 'lucide-react'
 
-export default function BacaPage() {
+function BacaContent() {
   const searchParams  = useSearchParams()
   const router        = useRouter()
   const viewerRef     = useRef(null)
@@ -362,5 +362,22 @@ export default function BacaPage() {
         <span className="text-xs opacity-40">← → untuk navigasi</span>
       </div>
     </div>
+  )
+}
+
+export default function BacaPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4"
+        style={{ background: '#F9F3E3' }}>
+        <div className="relative">
+          <div className="w-16 h-16 rounded-full border-4 border-forest-100" />
+          <div className="absolute inset-0 w-16 h-16 rounded-full border-4 border-t-forest-700 animate-spin" />
+        </div>
+        <p className="text-forest-500 text-sm">Memuat halaman baca...</p>
+      </div>
+    }>
+      <BacaContent />
+    </Suspense>
   )
 }
