@@ -60,9 +60,8 @@ export default function About() {
     return () => observer.disconnect()
   }, [])
 
-  const books  = useCountUp(12500, 2000, started)
-  const members = useCountUp(8200, 2000, started)
-  const journals = useCountUp(350, 1500, started)
+  const books    = useCountUp(12500, 2000, started)
+  const journals = useCountUp(350,   1500, started)
 
   return (
     <>
@@ -88,11 +87,10 @@ export default function About() {
                   </div>
 
                   {/* Stats */}
-                  <div className="grid grid-cols-3 gap-4 mb-8">
+                  <div className="grid grid-cols-2 gap-4 mb-8">
                     {[
-                      { value: books.toLocaleString('id-ID'), suffix: '+', label: 'Koleksi' },
-                      { value: members.toLocaleString('id-ID'), suffix: '+', label: 'Anggota' },
-                      { value: journals, suffix: '+', label: 'Jurnal' },
+                      { value: books.toLocaleString('id-ID'), suffix: '+', label: 'Koleksi Digital' },
+                      { value: journals, suffix: '+', label: 'Jurnal & Artikel' },
                     ].map((s) => (
                       <div key={s.label} className="text-center rounded-2xl py-3 px-2"
                         style={{ background: 'rgba(255,255,255,0.07)' }}

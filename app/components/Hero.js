@@ -219,12 +219,11 @@ export default function Hero() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-6 max-w-3xl mx-auto">
+        <div className="grid grid-cols-3 gap-6 max-w-2xl mx-auto">
           {[
-            { value: '12.500+', label: 'Koleksi Digital', icon: '📚' },
-            { value: '8.200+', label: 'Anggota Aktif',   icon: '👥' },
-            { value: '350+',   label: 'Jurnal & Artikel', icon: '📰' },
-            { value: '98%',    label: 'Kepuasan Pengguna', icon: '⭐' },
+            { value: '12.500+', label: 'Koleksi Digital',  icon: '📚' },
+            { value: '350+',    label: 'Jurnal & Artikel', icon: '📰' },
+            { value: '3 Sumber',label: 'Perpustakaan',     icon: '🌐' },
           ].map((stat) => (
             <div
               key={stat.label}
@@ -232,7 +231,7 @@ export default function Hero() {
               style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
             >
               <div className="text-2xl mb-1">{stat.icon}</div>
-              <div className="font-display font-bold text-white text-2xl">{stat.value}</div>
+              <div className="font-display font-bold text-white text-xl md:text-2xl">{stat.value}</div>
               <div className="text-xs mt-0.5" style={{ color: 'rgba(212,232,220,0.6)' }}>{stat.label}</div>
             </div>
           ))}
