@@ -55,7 +55,19 @@ const GUTENBERG_TOPIC_MAP = {
   'Poetry': 'Poetry', 'Horror': 'Horror', 'Humor': 'Humor',
 }
 
-function SourceBadge({ source }) {
+function SourceBadge({ source, isBSE }) {
+  if (isBSE) return (
+    <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold text-white"
+      style={{ background: '#E63946' }}>
+      📚 BSE
+    </span>
+  )
+  if (source === 'indonesia') return (
+    <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold text-white"
+      style={{ background: '#9B2226' }}>
+      🇮🇩 Indonesia
+    </span>
+  )
   if (source === 'gutenberg') return (
     <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold text-white"
       style={{ background: '#2D6A4F' }}>
@@ -110,7 +122,7 @@ function BookCard({ book, view }) {
                   {book.categoryEmoji} {book.category}
                 </span>
                 <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-forest-50 text-forest-600 border border-forest-200">{book.format}</span>
-                <SourceBadge source={book.source} />
+                <SourceBadge source={book.source} isBSE={book.isBSE} />
               </div>
               <h3 className="font-display font-bold text-forest-800 text-sm leading-snug line-clamp-2">{book.title}</h3>
               <p className="text-xs text-forest-500 mt-0.5 line-clamp-1">{book.author}</p>
@@ -141,7 +153,20 @@ function BookCard({ book, view }) {
         {coverSrc ? (
           <div className="w-full h-44 md:h-52 overflow-hidden bg-forest-100">
             <img src={coverSrc} alt={book.title} className="w-full h-full object-cover"
-              onError={e => { e.target.parentElement.innerHTML = '' }} />
+              onError={e => {
+                e.target.style.display = 'none'
+                e.target.parentElement.style.background = book.coverColor || 'linear-gradient(135deg,#1B4332,#2D6A4F)'
+              }} />
+          </div>
+        ) : book.coverColor ? (
+          <div className="w-full h-44 md:h-52 flex flex-col items-center justify-center relative overflow-hidden"
+            style={{ background: book.coverColor }}>
+            <div className="absolute left-0 top-0 bottom-0 w-3" style={{ background:'rgba(0,0,0,0.25)', borderRight:'1px solid rgba(255,255,255,0.1)' }} />
+            <div className="text-4xl mb-3">{book.categoryEmoji || book.emoji || '📖'}</div>
+            <div className="px-4 text-center">
+              <p className="text-white text-xs font-bold line-clamp-2 opacity-90">{book.title}</p>
+              {book.author && <p className="text-white/50 text-[10px] mt-1 line-clamp-1">{book.author}</p>}
+            </div>
           </div>
         ) : (
           <BookCover title={book.title} author={book.author} coverQuery={book.coverQuery} size="md" />
@@ -150,11 +175,11 @@ function BookCard({ book, view }) {
           <span className="px-1.5 py-0.5 rounded text-[9px] font-bold font-mono text-white"
             style={{ background: 'rgba(0,0,0,0.6)' }}>{book.format}</span>
         </div>
-        {book.source === 'gutenberg' && (
+        {(book.source === 'gutenberg' || book.source === 'indonesia') && (
           <div className="absolute top-2 left-2">
             <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold text-white"
-              style={{ background: 'rgba(45,106,79,0.9)' }}>
-              <Globe className="w-2.5 h-2.5" /> Gratis
+              style={{ background: book.source === 'indonesia' ? 'rgba(155,34,38,0.9)' : 'rgba(45,106,79,0.9)' }}>
+              {book.source === 'indonesia' ? '🇮🇩' : <Globe className="w-2.5 h-2.5" />} Gratis
             </span>
           </div>
         )}
@@ -203,8 +228,9 @@ function BookCard({ book, view }) {
 }
 
 const SOURCES = [
-  { id: 'ebook-mecca', label: 'Koleksi Lokal',   icon: '📚' },
-  { id: 'gutenberg',   label: 'Project Gutenberg (PDF/EPUB Gratis)', icon: '🌐' },
+  { id: 'ebook-mecca', label: 'Koleksi Lokal',              icon: '📚' },
+  { id: 'indonesia',   label: 'Buku Bahasa Indonesia 🇮🇩',   icon: '🏝️' },
+  { id: 'gutenberg',   label: 'Project Gutenberg (Gratis)', icon: '🌐' },
 ]
 
 function KatalogContent() {
@@ -234,6 +260,10 @@ function KatalogContent() {
         const topic = GUTENBERG_TOPIC_MAP[cat] || cat || ''
         const params = new URLSearchParams({ limit: LIMIT, page: pg, ...(topic && { topic }), ...(q && { search: q }) })
         res  = await fetch(`/api/gutenberg?${params}`)
+        data = await res.json()
+      } else if (src === 'indonesia') {
+        const params = new URLSearchParams({ limit: LIMIT, page: pg, source: 'all', ...(q && { search: q }), ...(cat && { category: cat }) })
+        res  = await fetch(`/api/buku-indonesia?${params}`)
         data = await res.json()
       } else {
         const params = new URLSearchParams({ limit: LIMIT, page: pg, ...(cat && { category: cat }) })
