@@ -1,6 +1,7 @@
 'use client'
 import { useRef, useEffect, useState } from 'react'
-import { CheckCircle, ArrowRight, MapPin, Phone, Mail, Clock } from 'lucide-react'
+import { CheckCircle, ArrowRight, MapPin, Phone, MessageCircle } from 'lucide-react'
+import { KartuAnggotaModal } from './Modals'
 
 const FEATURES = [
   'Koleksi diperbarui setiap minggu',
@@ -38,7 +39,8 @@ function useCountUp(target, duration = 2000, start = false) {
 
 export default function About() {
   const sectionRef = useRef(null)
-  const [started, setStarted] = useState(false)
+  const [started, setStarted]   = useState(false)
+  const [kartuOpen, setKartu]   = useState(false)
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -157,90 +159,66 @@ export default function About() {
                 ))}
               </div>
 
-              <a href="#daftar"
+              <button onClick={() => setKartu(true)}
                 className="inline-flex items-center gap-2 px-7 py-3.5 rounded-2xl text-sm font-bold text-white transition-all hover:scale-105 hover:shadow-lg hover:shadow-forest-700/30"
                 style={{ background: 'linear-gradient(135deg, #1B4332, #2D6A4F)' }}
               >
                 Bergabung Sekarang <ArrowRight className="w-4 h-4" />
-              </a>
+              </button>
             </div>
           </div>
         </div>
       </section>
 
       {/* Registration CTA */}
-      <section id="daftar" className="py-24 relative overflow-hidden"
+      <section id="daftar" className="py-16 md:py-24 relative overflow-hidden"
         style={{ background: 'linear-gradient(135deg, #F4ECD8 0%, #EDD9B5 100%)' }}
       >
         <div className="absolute inset-0 pointer-events-none">
           <div className="absolute top-0 left-0 w-full h-2"
-            style={{ background: 'linear-gradient(90deg, #1B4332, #D4A017, #1B4332)' }}
-          />
+            style={{ background: 'linear-gradient(90deg, #1B4332, #D4A017, #1B4332)' }} />
           <div className="absolute inset-0 opacity-40"
-            style={{
-              backgroundImage: 'radial-gradient(circle, rgba(27,67,50,0.15) 1px, transparent 1px)',
-              backgroundSize: '24px 24px',
-            }}
-          />
+            style={{ backgroundImage: 'radial-gradient(circle, rgba(27,67,50,0.15) 1px, transparent 1px)', backgroundSize: '24px 24px' }} />
         </div>
 
-        <div className="max-w-4xl mx-auto px-6 text-center relative">
-          <div className="text-5xl mb-6">🚀</div>
-          <h2 className="font-display font-bold text-4xl md:text-6xl text-forest-800 mb-4 leading-tight">
+        <div className="max-w-4xl mx-auto px-4 md:px-6 text-center relative">
+          <div className="text-4xl md:text-5xl mb-5">🚀</div>
+          <h2 className="font-display font-bold text-3xl md:text-5xl text-forest-800 mb-4 leading-tight">
             Siap Mulai<br />
             <span className="font-display italic text-gradient-green">Perjalanan Literasi</span>
             <span className="text-forest-800"> Anda?</span>
           </h2>
-          <p className="text-forest-600 text-lg max-w-xl mx-auto mb-10 leading-relaxed">
-            Daftar sekarang dan dapatkan akses gratis ke seluruh koleksi PINTAR JOHOR. 
+          <p className="text-forest-600 text-base md:text-lg max-w-xl mx-auto mb-8 leading-relaxed">
+            Daftar sekarang dan dapatkan akses gratis ke seluruh koleksi PINTAR JOHOR.
             Hanya membutuhkan KTP dan nomor WhatsApp aktif.
           </p>
 
-          {/* Form */}
-          <div className="bg-white rounded-3xl p-8 shadow-2xl shadow-forest-700/15 border border-forest-100 max-w-lg mx-auto">
-            <h3 className="font-display font-semibold text-2xl text-forest-800 mb-6">Daftar Gratis</h3>
-            <div className="space-y-4 text-left">
-              <div>
-                <label className="block text-xs font-semibold text-forest-600 uppercase tracking-wider mb-1.5">Nama Lengkap</label>
-                <input type="text" placeholder="Nama sesuai KTP"
-                  className="w-full px-4 py-3 rounded-xl border border-forest-200 text-sm outline-none focus:border-forest-500 transition-colors text-forest-800"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-forest-600 uppercase tracking-wider mb-1.5">Nomor WhatsApp</label>
-                <input type="tel" placeholder="08xx-xxxx-xxxx"
-                  className="w-full px-4 py-3 rounded-xl border border-forest-200 text-sm outline-none focus:border-forest-500 transition-colors text-forest-800"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-forest-600 uppercase tracking-wider mb-1.5">Kelurahan</label>
-                <select className="w-full px-4 py-3 rounded-xl border border-forest-200 text-sm outline-none focus:border-forest-500 transition-colors text-forest-800 bg-white">
-                  <option value="">Pilih kelurahan...</option>
-                  {KELURAHAN.map((k) => <option key={k}>{k}</option>)}
-                </select>
-              </div>
-              <button
-                className="w-full py-4 rounded-xl text-sm font-bold text-white transition-all hover:opacity-90 hover:scale-[1.02] hover:shadow-lg"
-                style={{ background: 'linear-gradient(135deg, #1B4332, #2D6A4F)' }}
-              >
-                Daftar Sekarang — Gratis!
-              </button>
-            </div>
-            <p className="text-xs text-forest-400 text-center mt-4">
-              Kartu anggota digital akan dikirim via WhatsApp dalam 5 menit.
-            </p>
+          {/* CTA buttons */}
+          <div className="flex flex-col sm:flex-row gap-4 justify-center mb-10">
+            <button onClick={() => setKartu(true)}
+              className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-2xl text-base font-bold text-white transition-all hover:scale-105 hover:shadow-xl"
+              style={{ background: 'linear-gradient(135deg, #1B4332, #2D6A4F)', boxShadow: '0 8px 32px rgba(27,67,50,0.3)' }}>
+              📋 Daftar Kartu Anggota — Gratis!
+            </button>
+            <a href="/katalog"
+              className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-2xl text-base font-bold transition-all hover:scale-105"
+              style={{ background: 'linear-gradient(135deg, #E8BE5A, #D4A017)', color: '#1B4332' }}>
+              📚 Langsung ke Katalog
+            </a>
           </div>
 
           {/* Contact info */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-12 text-left">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-8 text-left">
             {[
-              { icon: MapPin, label: 'Lokasi',   value: 'Jl. Karya Cipta No. 16, Medan Johor' },
-              { icon: Phone,  label: 'Telepon',  value: '0813-6777-2047' },
-              { icon: Mail,   label: 'WhatsApp', value: '0813-6777-2047' },
+              { icon: MapPin,       label: 'Lokasi',    value: 'Jl. Karya Cipta No. 16, Medan Johor', href: null },
+              { icon: Phone,        label: 'Telepon',   value: '0813-6777-2047', href: 'tel:+6281367772047' },
+              { icon: MessageCircle, label: 'WhatsApp', value: '0813-6777-2047', href: 'https://wa.me/6281367772047' },
             ].map((c) => {
               const Icon = c.icon
+              const Wrapper = c.href ? 'a' : 'div'
               return (
-                <div key={c.label} className="flex items-start gap-3 p-4 bg-white/70 rounded-2xl border border-forest-100">
+                <Wrapper key={c.label} href={c.href} target={c.href?.startsWith('http') ? '_blank' : undefined} rel="noopener noreferrer"
+                  className={`flex items-start gap-3 p-4 bg-white/70 rounded-2xl border border-forest-100 ${c.href ? 'hover:bg-white transition-colors' : ''}`}>
                   <div className="w-9 h-9 rounded-xl bg-forest-700/10 flex items-center justify-center flex-shrink-0">
                     <Icon className="w-4 h-4 text-forest-700" />
                   </div>
@@ -248,12 +226,14 @@ export default function About() {
                     <div className="text-xs font-semibold text-forest-500 uppercase tracking-wider">{c.label}</div>
                     <div className="text-sm text-forest-800 font-medium mt-0.5">{c.value}</div>
                   </div>
-                </div>
+                </Wrapper>
               )
             })}
           </div>
         </div>
       </section>
+
+      <KartuAnggotaModal open={kartuOpen} onClose={() => setKartu(false)} />
     </>
   )
 }
