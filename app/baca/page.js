@@ -1,200 +1,253 @@
 'use client'
-import { useState, useEffect, useRef, useCallback, Suspense } from 'react'
+import { useEffect, useRef, useState, useCallback, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import {
-  ArrowLeft, Home, Download, BookOpen, Loader2,
-  ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RefreshCw
+  ArrowLeft, ChevronLeft, ChevronRight, BookOpen,
+  Sun, Moon, Type, Minus, Plus, List, X, Loader2,
+  BookMarked, Home, AlignJustify
 } from 'lucide-react'
 
-const PDFJS_CDN    = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
-const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
-const CMAP_URL     = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/'
-
-// Domains that block server-side fetch — load directly in browser
-const DIRECT_DOMAINS = [
-  'archive.org', 'ia800', 'ia801', 'ia802', 'ia803', 'ia804',
-  'ia900', 'ia903', 'gutenberg.org', 'mozilla.github.io',
-  'standardebooks.org', 'manybooks.net',
-]
-
-function needsDirect(url) {
-  try {
-    const h = new URL(url).hostname
-    return DIRECT_DOMAINS.some(d => h.includes(d))
-  } catch { return false }
+// ─── Theme definitions (outside component — stable reference) ───────────────
+const THEMES = {
+  light: { bg: '#F9F3E3', fg: '#1a1a1a', barBg: '#ffffff', link: '#1B4332' },
+  sepia: { bg: '#F4ECD8', fg: '#3B2A1A', barBg: '#fdf6e3', link: '#6B4226' },
+  dark:  { bg: '#111827', fg: '#e5e7eb', barBg: '#0f172a', link: '#74C69D' },
 }
 
-function BacaPDFContent() {
+// ─── CSS injected into iframe content — NO iframe reload ────────────────────
+function buildBodyCSS(themeKey, fontSize) {
+  const t = THEMES[themeKey]
+  return `
+    html, body {
+      background: ${t.bg} !important;
+      color: ${t.fg} !important;
+      font-size: ${fontSize}% !important;
+      line-height: 1.8 !important;
+      font-family: 'Georgia', 'Palatino', serif !important;
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+    p, div, span, li, td, th {
+      color: ${t.fg} !important;
+    }
+    a { color: ${t.link} !important; }
+    h1, h2, h3, h4, h5, h6 {
+      color: ${t.fg} !important;
+      line-height: 1.3 !important;
+    }
+    img { max-width: 100% !important; height: auto !important; }
+    * { box-sizing: border-box !important; }
+  `
+}
+
+// ─── Main reader component ───────────────────────────────────────────────────
+function BacaContent() {
   const searchParams = useSearchParams()
   const router       = useRouter()
 
-  const rawUrl = searchParams.get('url')   || ''
-  const title  = searchParams.get('title') || 'Dokumen'
-  const author = searchParams.get('author')|| ''
+  const rawUrl  = searchParams.get('url')    || ''
+  const title   = searchParams.get('title')  || 'Buku'
+  const author  = searchParams.get('author') || ''
 
-  const canvasRef    = useRef(null)
-  const pdfRef       = useRef(null)
-  const renderingRef = useRef(false)
+  const proxyUrl = rawUrl ? `/api/read?url=${encodeURIComponent(rawUrl)}` : ''
 
-  const [status,     setStatus]     = useState('idle')
-  const [errorMsg,   setErrorMsg]   = useState('')
-  const [page,       setPage]       = useState(1)
-  const [totalPages, setTotalPages] = useState(0)
-  const [scale,      setScale]      = useState(1.3)
-  const [ready,      setReady]      = useState(false)
-  const [info,       setInfo]       = useState('')
+  // Refs — never trigger re-render
+  const viewerRef    = useRef(null)
+  const bookRef      = useRef(null)
+  const renditionRef = useRef(null)
+  const themeRef     = useRef('light')
+  const fontRef      = useRef(100)
+  const initialised  = useRef(false)
 
-  // ── Load PDF.js CDN once ───────────────────────────────────────────────
-  useEffect(() => {
-    if (window.pdfjsLib) { setReady(true); return }
-    const s = document.createElement('script')
-    s.src = PDFJS_CDN
-    s.onload = () => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER
-      setReady(true)
-    }
-    s.onerror = () => {
-      setStatus('error')
-      setErrorMsg('Gagal memuat PDF.js. Periksa koneksi internet Anda.')
-    }
-    document.head.appendChild(s)
+  // UI state
+  const [loading,       setLoading]      = useState(true)
+  const [error,         setError]        = useState(null)
+  const [theme,         setThemeState]   = useState('light')
+  const [fontSize,      setFontState]    = useState(100)
+  const [toc,           setToc]          = useState([])
+  const [tocOpen,       setTocOpen]      = useState(false)
+  const [settingsOpen,  setSettings]     = useState(false)
+  const [progress,      setProgress]     = useState(0)
+  const [currentHref,   setCurrentHref]  = useState('')
+  const [pageInfo,      setPageInfo]     = useState({ current: 0, total: 0 })
+
+  // ── Apply theme/font WITHOUT reloading iframe ──────────────────────────────
+  const applyStyles = useCallback((themeKey, fs) => {
+    const r = renditionRef.current
+    if (!r) return
+    // override() injects a <style> tag into the existing iframe — no reload
+    r.themes.override('body', {
+      'background': `${THEMES[themeKey].bg} !important`,
+      'color':      `${THEMES[themeKey].fg} !important`,
+      'font-size':  `${fs}% !important`,
+      'line-height':'1.8 !important',
+    })
+    r.themes.override('p, div, span, li, td, th', {
+      'color': `${THEMES[themeKey].fg} !important`,
+    })
+    r.themes.override('h1,h2,h3,h4,h5,h6', {
+      'color': `${THEMES[themeKey].fg} !important`,
+    })
+    r.themes.override('a', {
+      'color': `${THEMES[themeKey].link} !important`,
+    })
   }, [])
 
-  // ── Render page to canvas ──────────────────────────────────────────────
-  const renderPage = useCallback(async (pdf, pageNum, sc) => {
-    if (!canvasRef.current || renderingRef.current) return
-    renderingRef.current = true
-    try {
-      const pg       = await pdf.getPage(pageNum)
-      const viewport = pg.getViewport({ scale: sc })
-      const canvas   = canvasRef.current
-      const ctx      = canvas.getContext('2d')
-      canvas.width   = viewport.width
-      canvas.height  = viewport.height
-      await pg.render({ canvasContext: ctx, viewport }).promise
-    } finally {
-      renderingRef.current = false
-    }
-  }, [])
-
-  // ── Try loading PDF from a URL ─────────────────────────────────────────
-  const tryLoad = useCallback(async (url, label) => {
-    setInfo(label)
-    const pdf = await window.pdfjsLib.getDocument({
-      url,
-      withCredentials: false,
-      cMapUrl: CMAP_URL,
-      cMapPacked: true,
-      disableAutoFetch: false,
-      disableStream: false,
-    }).promise
-    return pdf
-  }, [])
-
-  // ── Main loader ────────────────────────────────────────────────────────
-  const loadPDF = useCallback(async () => {
-    if (!rawUrl || !ready) return
-
-    setStatus('loading')
-    setErrorMsg('')
-    setPage(1)
-    setTotalPages(0)
-    pdfRef.current = null
-
-    const useProxy = !needsDirect(rawUrl)
-    const proxyUrl = `/api/read?url=${encodeURIComponent(rawUrl)}`
-
-    let pdf = null
-
-    // Attempt 1: proxy (only for domains that allow server-side fetch)
-    if (useProxy) {
-      try {
-        pdf = await tryLoad(proxyUrl, 'Mengambil via server...')
-      } catch (e) {
-        console.warn('[PDF] Proxy failed:', e.message)
-      }
-    }
-
-    // Attempt 2: direct browser fetch (no proxy)
-    if (!pdf) {
-      try {
-        pdf = await tryLoad(rawUrl, 'Mengambil langsung dari sumber...')
-      } catch (e) {
-        console.warn('[PDF] Direct failed:', e.message)
-      }
-    }
-
-    // Attempt 3: CORS proxy fallback (allOrigins)
-    if (!pdf) {
-      try {
-        const corsProxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(rawUrl)}`
-        pdf = await tryLoad(corsProxy, 'Mencoba proxy alternatif...')
-      } catch (e) {
-        console.warn('[PDF] CORS proxy failed:', e.message)
-      }
-    }
-
-    if (!pdf) {
-      setStatus('error')
-      setErrorMsg(
-        'File PDF tidak dapat dibuka secara online. ' +
-        'Server sumber membatasi akses browser. ' +
-        'Silakan unduh file untuk membacanya secara offline.'
-      )
-      return
-    }
-
-    pdfRef.current = pdf
-    setTotalPages(pdf.numPages)
+  // ── Init reader — runs once per URL ────────────────────────────────────────
+  const initReader = useCallback(async () => {
+    if (!proxyUrl || !viewerRef.current || initialised.current) return
+    initialised.current = true
+    setLoading(true)
+    setError(null)
 
     try {
-      await renderPage(pdf, 1, scale)
-      setStatus('done')
-      setInfo('')
+      const ePub = (await import('epubjs')).default
+
+      // Clean up any previous instance
+      try { renditionRef.current?.destroy() } catch (_) {}
+      try { bookRef.current?.destroy() }      catch (_) {}
+      if (viewerRef.current) viewerRef.current.innerHTML = ''
+
+      const book = ePub(proxyUrl, { openAs: 'epub' })
+      bookRef.current = book
+
+      const rendition = book.renderTo(viewerRef.current, {
+        width:    '100%',
+        height:   '100%',
+        spread:   'none',
+        flow:     'paginated',
+        minSpreadWidth: 9999, // force single column
+      })
+      renditionRef.current = rendition
+
+      // ── Inject CSS hook — fires on every new chapter iframe ──────────────
+      // This is the KEY fix: inject styles at the content level, not via
+      // register/select which destroy and recreate the iframe
+      rendition.hooks.content.register((contents) => {
+        const css = buildBodyCSS(themeRef.current, fontRef.current)
+        contents.addStylesheetRules({
+          'body': {
+            'background': `${THEMES[themeRef.current].bg} !important`,
+            'color':      `${THEMES[themeRef.current].fg} !important`,
+            'font-size':  `${fontRef.current}% !important`,
+            'line-height':'1.8 !important',
+            'font-family':"'Georgia','Palatino',serif !important",
+          },
+          'p,div,span,li,td,th': { 'color': `${THEMES[themeRef.current].fg} !important` },
+          'h1,h2,h3,h4,h5,h6':  { 'color': `${THEMES[themeRef.current].fg} !important` },
+          'a':                   { 'color': `${THEMES[themeRef.current].link} !important` },
+          'img':                 { 'max-width': '100% !important', 'height': 'auto !important' },
+        })
+      })
+
+      // ── Display first page ────────────────────────────────────────────────
+      await rendition.display()
+      setLoading(false)
+
+      // ── TOC ───────────────────────────────────────────────────────────────
+      book.loaded.navigation.then((nav) => {
+        setToc(nav.toc || [])
+      })
+
+      // ── Page count (non-blocking) ─────────────────────────────────────────
+      book.ready.then(() => {
+        book.locations.generate(800).then(() => {
+          rendition.on('relocated', (location) => {
+            if (location?.start?.cfi) {
+              const pct = book.locations.percentageFromCfi(location.start.cfi)
+              setProgress(Math.round((pct || 0) * 100))
+            }
+            if (location?.start?.href) {
+              setCurrentHref(location.start.href)
+            }
+            if (location?.start?.displayed) {
+              setPageInfo({
+                current: location.start.displayed.page || 1,
+                total:   location.start.displayed.total || 1,
+              })
+            }
+          })
+        }).catch(() => {
+          // locations generation failed silently — progress just won't show
+        })
+      }).catch(() => {})
+
     } catch (e) {
-      setStatus('error')
-      setErrorMsg('Gagal menggambar halaman PDF: ' + e.message)
+      console.error('[EPUB reader]', e)
+      setError('Gagal memuat buku. Format tidak didukung atau file tidak dapat diakses.')
+      setLoading(false)
+      initialised.current = false
     }
-  }, [rawUrl, ready, tryLoad, renderPage, scale])
+  }, [proxyUrl]) // only re-init if URL changes
 
   useEffect(() => {
-    if (ready && rawUrl) loadPDF()
-  }, [ready, rawUrl, loadPDF])
-
-  // ── Navigate pages ─────────────────────────────────────────────────────
-  const goToPage = useCallback(async (n) => {
-    if (!pdfRef.current || n < 1 || n > totalPages) return
-    setPage(n)
-    await renderPage(pdfRef.current, n, scale)
-  }, [totalPages, scale, renderPage])
-
-  // ── Zoom ───────────────────────────────────────────────────────────────
-  const zoom = useCallback(async (delta) => {
-    if (!pdfRef.current) return
-    const ns = Math.min(3, Math.max(0.5, +(scale + delta).toFixed(1)))
-    setScale(ns)
-    await renderPage(pdfRef.current, page, ns)
-  }, [scale, page, renderPage])
-
-  // ── Keyboard ───────────────────────────────────────────────────────────
-  useEffect(() => {
-    const h = (e) => {
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goToPage(page + 1)
-      if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   goToPage(page - 1)
-      if (e.key === '+') zoom(+0.2)
-      if (e.key === '-') zoom(-0.2)
+    initialised.current = false
+    initReader()
+    return () => {
+      try { renditionRef.current?.destroy() } catch (_) {}
+      try { bookRef.current?.destroy() }      catch (_) {}
     }
-    window.addEventListener('keydown', h)
-    return () => window.removeEventListener('keydown', h)
-  }, [goToPage, zoom, page])
+  }, [initReader])
 
-  if (!rawUrl) {
+  // ── Theme change — update ref + apply via override (NO iframe reload) ──────
+  const setTheme = useCallback((t) => {
+    themeRef.current = t
+    setThemeState(t)
+    applyStyles(t, fontRef.current)
+  }, [applyStyles])
+
+  // ── Font size change — update ref + apply via override ─────────────────────
+  const setFontSize = useCallback((fs) => {
+    fontRef.current = fs
+    setFontState(fs)
+    applyStyles(themeRef.current, fs)
+  }, [applyStyles])
+
+  // ── Navigation ─────────────────────────────────────────────────────────────
+  const prevPage = useCallback(() => renditionRef.current?.prev(), [])
+  const nextPage = useCallback(() => renditionRef.current?.next(), [])
+  const goToChapter = useCallback((href) => {
+    renditionRef.current?.display(href)
+    setTocOpen(false)
+  }, [])
+
+  // ── Keyboard nav ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === 'ArrowLeft')  prevPage()
+      if (e.key === 'ArrowRight') nextPage()
+      if (e.key === 'Escape')     { setTocOpen(false); setSettings(false) }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [prevPage, nextPage])
+
+  // ── Touch swipe support ────────────────────────────────────────────────────
+  useEffect(() => {
+    const el = viewerRef.current
+    if (!el) return
+    let startX = 0
+    const onTouchStart = (e) => { startX = e.touches[0].clientX }
+    const onTouchEnd   = (e) => {
+      const dx = e.changedTouches[0].clientX - startX
+      if (Math.abs(dx) > 50) { dx > 0 ? prevPage() : nextPage() }
+    }
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchend',   onTouchEnd,   { passive: true })
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchend',   onTouchEnd)
+    }
+  }, [prevPage, nextPage])
+
+  if (!proxyUrl) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: '#F9F3E3' }}>
         <div className="text-center px-6">
-          <div className="text-5xl mb-4">📄</div>
-          <h2 className="font-display font-bold text-2xl text-forest-800 mb-2">Dokumen tidak ditemukan</h2>
-          <a href="/katalog" className="mt-4 inline-block px-6 py-3 bg-forest-700 text-white rounded-xl text-sm font-bold">
+          <div className="text-5xl mb-4">📖</div>
+          <h2 className="font-display font-bold text-2xl text-forest-800 mb-2">Buku tidak ditemukan</h2>
+          <p className="text-forest-500 mb-5 text-sm">URL buku tidak valid atau tidak tersedia.</p>
+          <a href="/katalog" className="px-6 py-3 bg-forest-700 text-white rounded-xl text-sm font-bold">
             Ke Katalog
           </a>
         </div>
@@ -202,168 +255,249 @@ function BacaPDFContent() {
     )
   }
 
+  const t       = THEMES[theme]
+  const barBorder = theme === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'
+
   return (
-    <div className="flex flex-col overflow-hidden" style={{ height: '100dvh', background: '#323639' }}>
+    <div className="flex flex-col overflow-hidden"
+      style={{ height: '100dvh', background: t.bg, color: t.fg }}>
 
       {/* ── Top bar ── */}
-      <div className="flex items-center justify-between px-3 md:px-5 py-2.5 bg-white border-b border-gray-200 flex-shrink-0 gap-2 z-10">
+      <div className="flex items-center justify-between px-3 md:px-5 py-2.5 border-b flex-shrink-0 gap-2 z-40"
+        style={{ background: t.barBg, borderColor: barBorder }}>
+        {/* Left: back + home + title */}
         <div className="flex items-center gap-2 min-w-0">
           <button onClick={() => router.back()}
-            className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-gray-100 text-gray-700">
+            className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-colors"
+            style={{ color: t.fg }}>
             <ArrowLeft className="w-4 h-4" />
           </button>
           <button onClick={() => router.push('/')}
-            className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-gray-100 text-gray-700">
+            className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-colors"
+            style={{ color: t.fg }}>
             <Home className="w-4 h-4" />
           </button>
           <div className="min-w-0 hidden sm:block">
-            <p className="font-display font-bold text-sm text-forest-800 truncate">{title}</p>
-            {author && <p className="text-xs text-forest-500 truncate">{author}</p>}
+            <p className="font-display font-bold text-sm truncate" style={{ color: t.fg }}>{title}</p>
+            {author && <p className="text-xs truncate opacity-50" style={{ color: t.fg }}>{author}</p>}
           </div>
         </div>
 
+        {/* Right: actions */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          {status === 'done' && (
-            <div className="hidden sm:flex items-center gap-1 bg-gray-100 rounded-xl p-1">
-              <button onClick={() => zoom(-0.2)}
-                className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-white text-gray-600 transition-all">
-                <ZoomOut className="w-3.5 h-3.5" />
-              </button>
-              <span className="text-xs font-bold text-gray-600 w-10 text-center">
-                {Math.round(scale * 100)}%
-              </span>
-              <button onClick={() => zoom(+0.2)}
-                className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-white text-gray-600 transition-all">
-                <ZoomIn className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-
-          <button onClick={loadPDF}
-            title="Muat ulang"
-            className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-gray-100 text-gray-600">
-            <RefreshCw className={`w-4 h-4 ${status === 'loading' ? 'animate-spin' : ''}`} />
+          <button onClick={() => { setTocOpen(v => !v); setSettings(false) }}
+            className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
+            style={{ background: tocOpen ? '#1B4332' : 'transparent', color: tocOpen ? '#fff' : t.fg }}>
+            <AlignJustify className="w-4 h-4" />
           </button>
-
+          <button onClick={() => { setSettings(v => !v); setTocOpen(false) }}
+            className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
+            style={{ background: settingsOpen ? '#1B4332' : 'transparent', color: settingsOpen ? '#fff' : t.fg }}>
+            <Type className="w-4 h-4" />
+          </button>
           <a href="/katalog"
             className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-white"
             style={{ background: 'linear-gradient(135deg, #1B4332, #2D6A4F)' }}>
             <BookOpen className="w-3.5 h-3.5" /> Katalog
           </a>
-
-          <a href={rawUrl} target="_blank" rel="noopener noreferrer"
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold"
-            style={{ background: 'linear-gradient(135deg, #E8BE5A, #D4A017)', color: '#1B4332' }}>
-            <Download className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Unduh</span>
-          </a>
         </div>
       </div>
 
-      {/* ── Viewer ── */}
-      <div className="flex-1 overflow-auto">
-
-        {/* Loading */}
-        {status === 'loading' && (
-          <div className="flex flex-col items-center justify-center h-full gap-5">
-            <div className="relative w-16 h-16">
-              <div className="absolute inset-0 rounded-full border-4 border-gray-600" />
-              <div className="absolute inset-0 rounded-full border-4 border-t-yellow-400 animate-spin" />
-            </div>
-            <div className="text-center">
-              <p className="text-white text-sm font-medium">
-                {!ready ? 'Memuat PDF.js...' : info || 'Membuka PDF...'}
-              </p>
-              <p className="text-gray-400 text-xs mt-1">Harap tunggu</p>
-            </div>
-          </div>
-        )}
-
-        {/* Error */}
-        {status === 'error' && (
-          <div className="flex flex-col items-center justify-center h-full gap-5 px-6 text-center">
-            <div className="w-20 h-20 rounded-3xl flex items-center justify-center"
-              style={{ background: 'rgba(251,191,36,0.15)', border: '2px solid rgba(251,191,36,0.3)' }}>
-              <span className="text-4xl">📄</span>
-            </div>
-            <div>
-              <h3 className="font-display font-bold text-xl text-white mb-2">
-                PDF Tidak Dapat Dibuka Online
-              </h3>
-              <p className="text-gray-400 text-sm max-w-sm leading-relaxed">{errorMsg}</p>
-              <p className="text-gray-500 text-xs mt-3 max-w-xs">
-                💡 Tip: Buku berformat <strong className="text-yellow-400">EPUB</strong> dapat
-                dibaca langsung online tanpa masalah ini.
-              </p>
-            </div>
-            <div className="flex flex-col sm:flex-row gap-3">
-              <a href={rawUrl} target="_blank" rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-sm font-bold text-forest-900"
-                style={{ background: 'linear-gradient(135deg, #E8BE5A, #D4A017)' }}>
-                <Download className="w-4 h-4" /> Unduh PDF
-              </a>
-              <button onClick={loadPDF}
-                className="flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-sm font-bold text-white"
-                style={{ background: 'linear-gradient(135deg, #1B4332, #2D6A4F)' }}>
-                <RefreshCw className="w-4 h-4" /> Coba Lagi
-              </button>
-              <button onClick={() => router.back()}
-                className="flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-sm font-semibold text-gray-300 bg-gray-700 hover:bg-gray-600">
-                ← Kembali
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Canvas */}
-        <div
-          className="flex justify-center py-6 px-4 min-h-full"
-          style={{ display: status === 'done' ? 'flex' : 'none' }}
-        >
-          <canvas
-            ref={canvasRef}
-            className="shadow-2xl max-w-full h-auto"
-            style={{ background: 'white', borderRadius: 2 }}
-          />
-        </div>
+      {/* ── Progress bar ── */}
+      <div className="h-0.5 flex-shrink-0" style={{ background: barBorder }}>
+        <div className="h-full transition-all duration-700 ease-out"
+          style={{ width: `${progress}%`, background: 'linear-gradient(90deg, #1B4332, #D4A017)' }} />
       </div>
 
-      {/* ── Bottom nav ── */}
-      {status === 'done' && totalPages > 1 && (
-        <div className="flex items-center justify-between px-4 py-2 flex-shrink-0 border-t"
-          style={{ background: '#2a2a2a', borderColor: '#444' }}>
-          <button onClick={() => goToPage(page - 1)} disabled={page <= 1}
-            className="flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-medium text-white disabled:opacity-30 hover:bg-white/10 transition-all">
-            <ChevronLeft className="w-4 h-4" /> Prev
-          </button>
-
-          <div className="flex items-center gap-2 text-sm text-gray-300">
-            <input
-              type="number" value={page} min={1} max={totalPages}
-              onChange={(e) => { const v = parseInt(e.target.value); if (v >= 1 && v <= totalPages) goToPage(v) }}
-              className="w-12 text-center font-bold bg-gray-700 text-white rounded-lg py-1 outline-none border border-gray-600 focus:border-yellow-400"
-            />
-            <span className="opacity-50">/ {totalPages}</span>
+      {/* ── Settings panel ── */}
+      {settingsOpen && (
+        <div className="absolute top-14 right-3 z-50 rounded-2xl shadow-2xl p-5 w-64 border"
+          style={{ background: t.barBg, borderColor: barBorder }}>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-display font-semibold text-sm" style={{ color: t.fg }}>Pengaturan</h3>
+            <button onClick={() => setSettings(false)} style={{ color: t.fg, opacity: 0.5 }}>
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
-          <button onClick={() => goToPage(page + 1)} disabled={page >= totalPages}
-            className="flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-medium text-white disabled:opacity-30 hover:bg-white/10 transition-all">
-            Next <ChevronRight className="w-4 h-4" />
-          </button>
+          {/* Font size */}
+          <div className="mb-5">
+            <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: t.fg, opacity: 0.5 }}>
+              Ukuran Teks
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setFontSize(Math.max(70, fontRef.current - 10))}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold"
+                style={{ background: '#1B4332' }}>
+                <Minus className="w-3.5 h-3.5" />
+              </button>
+              <span className="flex-1 text-center text-sm font-bold" style={{ color: t.fg }}>
+                {fontSize}%
+              </span>
+              <button
+                onClick={() => setFontSize(Math.min(160, fontRef.current + 10))}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold"
+                style={{ background: '#1B4332' }}>
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Theme */}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: t.fg, opacity: 0.5 }}>
+              Tema Warna
+            </p>
+            <div className="flex gap-2">
+              {[
+                { id: 'light', label: 'Terang', icon: <Sun className="w-3.5 h-3.5" />,      bg: '#F9F3E3', fg: '#1a1a1a' },
+                { id: 'sepia', label: 'Sepia',  icon: <BookMarked className="w-3.5 h-3.5" />, bg: '#F4ECD8', fg: '#3B2A1A' },
+                { id: 'dark',  label: 'Gelap',  icon: <Moon className="w-3.5 h-3.5" />,     bg: '#111827', fg: '#e5e7eb' },
+              ].map(opt => (
+                <button key={opt.id}
+                  onClick={() => setTheme(opt.id)}
+                  className="flex-1 flex flex-col items-center gap-1 py-2.5 rounded-xl text-[10px] font-semibold border-2 transition-all"
+                  style={{
+                    background: opt.bg, color: opt.fg,
+                    borderColor: theme === opt.id ? '#D4A017' : 'transparent',
+                    boxShadow: theme === opt.id ? '0 0 0 3px rgba(212,160,23,0.2)' : 'none',
+                  }}>
+                  {opt.icon}
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       )}
+
+      {/* ── TOC panel ── */}
+      {tocOpen && (
+        <div className="absolute top-14 right-3 z-50 rounded-2xl shadow-2xl w-72 border overflow-hidden"
+          style={{ background: t.barBg, borderColor: barBorder }}>
+          <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: barBorder }}>
+            <h3 className="font-display font-semibold text-sm" style={{ color: t.fg }}>Daftar Isi</h3>
+            <button onClick={() => setTocOpen(false)} style={{ color: t.fg, opacity: 0.5 }}>
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="overflow-y-auto max-h-80">
+            {toc.length === 0 ? (
+              <p className="px-4 py-4 text-xs opacity-40" style={{ color: t.fg }}>
+                Daftar isi tidak tersedia
+              </p>
+            ) : toc.map((item, i) => (
+              <button key={i} onClick={() => goToChapter(item.href)}
+                className="w-full text-left px-4 py-3 text-sm border-b last:border-0 transition-colors"
+                style={{
+                  color: currentHref.includes(item.href) ? '#D4A017' : t.fg,
+                  borderColor: barBorder,
+                  background: currentHref.includes(item.href) ? (theme === 'dark' ? 'rgba(212,160,23,0.1)' : 'rgba(27,67,50,0.05)') : 'transparent',
+                }}>
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Reader area ── */}
+      <div className="flex-1 relative overflow-hidden flex items-stretch">
+        {/* Prev button */}
+        <button onClick={prevPage}
+          className="absolute left-1 md:left-3 top-1/2 -translate-y-1/2 z-30 w-9 h-16 md:w-11 md:h-20 rounded-xl flex items-center justify-center opacity-20 hover:opacity-80 transition-opacity"
+          style={{ background: t.barBg, border: `1px solid ${barBorder}` }}>
+          <ChevronLeft className="w-4 h-4 md:w-5 md:h-5" style={{ color: t.fg }} />
+        </button>
+
+        {/* Loading overlay */}
+        {loading && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 z-20"
+            style={{ background: t.bg }}>
+            <div className="relative w-16 h-16">
+              <div className="absolute inset-0 rounded-full border-4 border-forest-100" />
+              <div className="absolute inset-0 rounded-full border-4 border-t-forest-700 animate-spin" />
+            </div>
+            <div className="text-center">
+              <p className="text-sm font-medium opacity-70" style={{ color: t.fg }}>Memuat buku...</p>
+              <p className="text-xs opacity-40 mt-1" style={{ color: t.fg }}>Harap tunggu sebentar</p>
+            </div>
+          </div>
+        )}
+
+        {/* Error overlay */}
+        {error && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center z-20"
+            style={{ background: t.bg }}>
+            <div className="text-5xl">😔</div>
+            <h3 className="font-display font-bold text-xl" style={{ color: t.fg }}>Gagal Memuat Buku</h3>
+            <p className="text-sm opacity-60 max-w-sm" style={{ color: t.fg }}>{error}</p>
+            <div className="flex gap-3 flex-wrap justify-center">
+              <button onClick={() => { initialised.current = false; initReader() }}
+                className="px-5 py-2.5 rounded-xl text-sm font-bold text-white"
+                style={{ background: '#1B4332' }}>
+                Coba Lagi
+              </button>
+              <a href={rawUrl} target="_blank" rel="noopener noreferrer"
+                className="px-5 py-2.5 rounded-xl text-sm font-bold"
+                style={{ background: 'rgba(27,67,50,0.1)', color: '#1B4332' }}>
+                Unduh File
+              </a>
+            </div>
+          </div>
+        )}
+
+        {/* EPUB viewer — stable div, never unmounted */}
+        <div
+          ref={viewerRef}
+          className="flex-1 w-full"
+          style={{ minHeight: 0 }}
+        />
+
+        {/* Next button */}
+        <button onClick={nextPage}
+          className="absolute right-1 md:right-3 top-1/2 -translate-y-1/2 z-30 w-9 h-16 md:w-11 md:h-20 rounded-xl flex items-center justify-center opacity-20 hover:opacity-80 transition-opacity"
+          style={{ background: t.barBg, border: `1px solid ${barBorder}` }}>
+          <ChevronRight className="w-4 h-4 md:w-5 md:h-5" style={{ color: t.fg }} />
+        </button>
+      </div>
+
+      {/* ── Bottom bar ── */}
+      <div className="flex items-center justify-between px-4 md:px-6 py-2 border-t flex-shrink-0"
+        style={{ background: t.barBg, borderColor: barBorder }}>
+        <span className="text-xs opacity-40" style={{ color: t.fg }}>
+          {progress > 0 ? `${progress}%` : '—'}
+        </span>
+        <div className="flex items-center gap-1">
+          {[...Array(10)].map((_, i) => (
+            <div key={i} className="rounded-full transition-all duration-500"
+              style={{
+                width: i < Math.round(progress / 10) ? 16 : 6,
+                height: 5,
+                background: i < Math.round(progress / 10) ? '#1B4332' : (theme === 'dark' ? 'rgba(255,255,255,0.15)' : 'rgba(27,67,50,0.15)'),
+              }} />
+          ))}
+        </div>
+        <span className="text-xs opacity-30 hidden sm:block" style={{ color: t.fg }}>
+          ← →
+        </span>
+      </div>
     </div>
   )
 }
 
-export default function BacaPDFPage() {
+export default function BacaPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center" style={{ background: '#323639' }}>
-        <Loader2 className="w-8 h-8 animate-spin text-yellow-400" />
+      <div className="min-h-screen flex items-center justify-center" style={{ background: '#F9F3E3' }}>
+        <div className="relative w-14 h-14">
+          <div className="absolute inset-0 rounded-full border-4 border-forest-100" />
+          <div className="absolute inset-0 rounded-full border-4 border-t-forest-700 animate-spin" />
+        </div>
       </div>
     }>
-      <BacaPDFContent />
+      <BacaContent />
     </Suspense>
   )
 }
