@@ -6,10 +6,23 @@ import {
   ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RefreshCw
 } from 'lucide-react'
 
-// PDF.js loaded from CDN — renders PDF to <canvas> directly in page
-// No iframe, no Google Docs viewer → no "no preview" / 503 issues
-const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
+const PDFJS_CDN    = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
 const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+const CMAP_URL     = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/'
+
+// Domains that block server-side fetch — load directly in browser
+const DIRECT_DOMAINS = [
+  'archive.org', 'ia800', 'ia801', 'ia802', 'ia803', 'ia804',
+  'ia900', 'ia903', 'gutenberg.org', 'mozilla.github.io',
+  'standardebooks.org', 'manybooks.net',
+]
+
+function needsDirect(url) {
+  try {
+    const h = new URL(url).hostname
+    return DIRECT_DOMAINS.some(d => h.includes(d))
+  } catch { return false }
+}
 
 function BacaPDFContent() {
   const searchParams = useSearchParams()
@@ -23,156 +36,157 @@ function BacaPDFContent() {
   const pdfRef       = useRef(null)
   const renderingRef = useRef(false)
 
-  const [status,      setStatus]      = useState('idle')   // idle|checking|rendering|done|error
-  const [errorMsg,    setErrorMsg]    = useState('')
-  const [page,        setPage]        = useState(1)
-  const [totalPages,  setTotalPages]  = useState(0)
-  const [scale,       setScale]       = useState(1.2)
-  const [pdfjsReady,  setPdfjsReady]  = useState(false)
-  const [sourceLabel, setSourceLabel] = useState('')
+  const [status,     setStatus]     = useState('idle')
+  const [errorMsg,   setErrorMsg]   = useState('')
+  const [page,       setPage]       = useState(1)
+  const [totalPages, setTotalPages] = useState(0)
+  const [scale,      setScale]      = useState(1.3)
+  const [ready,      setReady]      = useState(false)
+  const [info,       setInfo]       = useState('')
 
-  // ── Load PDF.js from CDN once ──────────────────────────────────────────
+  // ── Load PDF.js CDN once ───────────────────────────────────────────────
   useEffect(() => {
-    if (window.pdfjsLib) { setPdfjsReady(true); return }
-    const script = document.createElement('script')
-    script.src = PDFJS_CDN
-    script.onload = () => {
+    if (window.pdfjsLib) { setReady(true); return }
+    const s = document.createElement('script')
+    s.src = PDFJS_CDN
+    s.onload = () => {
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER
-      setPdfjsReady(true)
+      setReady(true)
     }
-    script.onerror = () => setErrorMsg('Gagal memuat PDF.js dari CDN')
-    document.head.appendChild(script)
+    s.onerror = () => {
+      setStatus('error')
+      setErrorMsg('Gagal memuat PDF.js. Periksa koneksi internet Anda.')
+    }
+    document.head.appendChild(s)
   }, [])
 
-  // ── Determine best URL to load ─────────────────────────────────────────
-  // Strategy: try proxy first (handles CORS), fallback to direct URL
-  const resolveUrl = useCallback(async (original) => {
-    const proxyUrl = `/api/read?url=${encodeURIComponent(original)}`
-
-    try {
-      setSourceLabel('Memeriksa sumber...')
-      const res = await fetch(proxyUrl, { method: 'HEAD' })
-      if (res.ok) {
-        setSourceLabel('Membaca via proxy')
-        return proxyUrl
-      }
-      // Proxy returned error (503, 404, etc.) — try direct URL
-      setSourceLabel('Membaca langsung...')
-      const directRes = await fetch(original, { method: 'HEAD', mode: 'no-cors' })
-      // no-cors always "succeeds" — just use direct URL optimistically
-      setSourceLabel('Membaca dari sumber')
-      return original
-    } catch {
-      // Network error on proxy — try direct
-      setSourceLabel('Membaca dari sumber')
-      return original
-    }
-  }, [])
-
-  // ── Render a single page to canvas ────────────────────────────────────
+  // ── Render page to canvas ──────────────────────────────────────────────
   const renderPage = useCallback(async (pdf, pageNum, sc) => {
     if (!canvasRef.current || renderingRef.current) return
     renderingRef.current = true
     try {
-      const pdfPage   = await pdf.getPage(pageNum)
-      const viewport  = pdfPage.getViewport({ scale: sc })
-      const canvas    = canvasRef.current
-      const ctx       = canvas.getContext('2d')
-
-      canvas.width  = viewport.width
-      canvas.height = viewport.height
-
-      await pdfPage.render({ canvasContext: ctx, viewport }).promise
+      const pg       = await pdf.getPage(pageNum)
+      const viewport = pg.getViewport({ scale: sc })
+      const canvas   = canvasRef.current
+      const ctx      = canvas.getContext('2d')
+      canvas.width   = viewport.width
+      canvas.height  = viewport.height
+      await pg.render({ canvasContext: ctx, viewport }).promise
     } finally {
       renderingRef.current = false
     }
   }, [])
 
-  // ── Main load function ─────────────────────────────────────────────────
-  const loadPDF = useCallback(async () => {
-    if (!rawUrl || !pdfjsReady || !window.pdfjsLib) return
+  // ── Try loading PDF from a URL ─────────────────────────────────────────
+  const tryLoad = useCallback(async (url, label) => {
+    setInfo(label)
+    const pdf = await window.pdfjsLib.getDocument({
+      url,
+      withCredentials: false,
+      cMapUrl: CMAP_URL,
+      cMapPacked: true,
+      disableAutoFetch: false,
+      disableStream: false,
+    }).promise
+    return pdf
+  }, [])
 
-    setStatus('checking')
+  // ── Main loader ────────────────────────────────────────────────────────
+  const loadPDF = useCallback(async () => {
+    if (!rawUrl || !ready) return
+
+    setStatus('loading')
     setErrorMsg('')
     setPage(1)
     setTotalPages(0)
     pdfRef.current = null
 
-    try {
-      const url = await resolveUrl(rawUrl)
+    const useProxy = !needsDirect(rawUrl)
+    const proxyUrl = `/api/read?url=${encodeURIComponent(rawUrl)}`
 
-      setStatus('rendering')
-      const loadingTask = window.pdfjsLib.getDocument({
-        url,
-        withCredentials: false,
-        cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
-        cMapPacked: true,
-      })
+    let pdf = null
 
-      const pdf = await loadingTask.promise
-      pdfRef.current  = pdf
-      setTotalPages(pdf.numPages)
-
-      await renderPage(pdf, 1, scale)
-      setStatus('done')
-    } catch (e) {
-      console.error('[PDF reader]', e)
-      // Try with direct URL as last resort
-      if (!e.message?.includes('direct')) {
-        try {
-          setSourceLabel('Mencoba URL langsung...')
-          const pdf = await window.pdfjsLib.getDocument({
-            url: rawUrl,
-            withCredentials: false,
-          }).promise
-          pdfRef.current = pdf
-          setTotalPages(pdf.numPages)
-          await renderPage(pdf, 1, scale)
-          setStatus('done')
-          setSourceLabel('Berhasil dari sumber langsung')
-          return
-        } catch (e2) {
-          console.error('[PDF reader direct]', e2)
-        }
+    // Attempt 1: proxy (only for domains that allow server-side fetch)
+    if (useProxy) {
+      try {
+        pdf = await tryLoad(proxyUrl, 'Mengambil via server...')
+      } catch (e) {
+        console.warn('[PDF] Proxy failed:', e.message)
       }
+    }
+
+    // Attempt 2: direct browser fetch (no proxy)
+    if (!pdf) {
+      try {
+        pdf = await tryLoad(rawUrl, 'Mengambil langsung dari sumber...')
+      } catch (e) {
+        console.warn('[PDF] Direct failed:', e.message)
+      }
+    }
+
+    // Attempt 3: CORS proxy fallback (allOrigins)
+    if (!pdf) {
+      try {
+        const corsProxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(rawUrl)}`
+        pdf = await tryLoad(corsProxy, 'Mencoba proxy alternatif...')
+      } catch (e) {
+        console.warn('[PDF] CORS proxy failed:', e.message)
+      }
+    }
+
+    if (!pdf) {
       setStatus('error')
       setErrorMsg(
-        e.name === 'InvalidPDFException'
-          ? 'File bukan PDF yang valid.'
-          : e.message?.includes('fetch') || e.message?.includes('network')
-          ? 'Tidak dapat mengambil file. Server mungkin membatasi akses.'
-          : `Gagal memuat PDF: ${e.message || 'Error tidak diketahui'}`
+        'File PDF tidak dapat dibuka secara online. ' +
+        'Server sumber membatasi akses browser. ' +
+        'Silakan unduh file untuk membacanya secara offline.'
       )
+      return
     }
-  }, [rawUrl, pdfjsReady, resolveUrl, renderPage, scale])
+
+    pdfRef.current = pdf
+    setTotalPages(pdf.numPages)
+
+    try {
+      await renderPage(pdf, 1, scale)
+      setStatus('done')
+      setInfo('')
+    } catch (e) {
+      setStatus('error')
+      setErrorMsg('Gagal menggambar halaman PDF: ' + e.message)
+    }
+  }, [rawUrl, ready, tryLoad, renderPage, scale])
 
   useEffect(() => {
-    loadPDF()
-  }, [loadPDF])
+    if (ready && rawUrl) loadPDF()
+  }, [ready, rawUrl, loadPDF])
 
-  // ── Page navigation ────────────────────────────────────────────────────
-  const goToPage = useCallback(async (newPage) => {
-    if (!pdfRef.current || newPage < 1 || newPage > totalPages) return
-    setPage(newPage)
-    await renderPage(pdfRef.current, newPage, scale)
+  // ── Navigate pages ─────────────────────────────────────────────────────
+  const goToPage = useCallback(async (n) => {
+    if (!pdfRef.current || n < 1 || n > totalPages) return
+    setPage(n)
+    await renderPage(pdfRef.current, n, scale)
   }, [totalPages, scale, renderPage])
 
   // ── Zoom ───────────────────────────────────────────────────────────────
-  const changeZoom = useCallback(async (newScale) => {
+  const zoom = useCallback(async (delta) => {
     if (!pdfRef.current) return
-    setScale(newScale)
-    await renderPage(pdfRef.current, page, newScale)
-  }, [page, renderPage])
+    const ns = Math.min(3, Math.max(0.5, +(scale + delta).toFixed(1)))
+    setScale(ns)
+    await renderPage(pdfRef.current, page, ns)
+  }, [scale, page, renderPage])
 
-  // ── Keyboard navigation ────────────────────────────────────────────────
+  // ── Keyboard ───────────────────────────────────────────────────────────
   useEffect(() => {
-    const handler = (e) => {
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown')  goToPage(page + 1)
-      if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')    goToPage(page - 1)
+    const h = (e) => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goToPage(page + 1)
+      if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   goToPage(page - 1)
+      if (e.key === '+') zoom(+0.2)
+      if (e.key === '-') zoom(-0.2)
     }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [goToPage, page])
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [goToPage, zoom, page])
 
   if (!rawUrl) {
     return (
@@ -188,10 +202,8 @@ function BacaPDFContent() {
     )
   }
 
-  const isLoading = status === 'idle' || status === 'checking' || status === 'rendering'
-
   return (
-    <div className="flex flex-col overflow-hidden" style={{ height: '100dvh', background: '#404040' }}>
+    <div className="flex flex-col overflow-hidden" style={{ height: '100dvh', background: '#323639' }}>
 
       {/* ── Top bar ── */}
       <div className="flex items-center justify-between px-3 md:px-5 py-2.5 bg-white border-b border-gray-200 flex-shrink-0 gap-2 z-10">
@@ -211,15 +223,16 @@ function BacaPDFContent() {
         </div>
 
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          {/* Zoom controls */}
           {status === 'done' && (
             <div className="hidden sm:flex items-center gap-1 bg-gray-100 rounded-xl p-1">
-              <button onClick={() => changeZoom(Math.max(0.5, +(scale - 0.2).toFixed(1)))}
+              <button onClick={() => zoom(-0.2)}
                 className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-white text-gray-600 transition-all">
                 <ZoomOut className="w-3.5 h-3.5" />
               </button>
-              <span className="text-xs font-bold text-gray-600 w-10 text-center">{Math.round(scale * 100)}%</span>
-              <button onClick={() => changeZoom(Math.min(3, +(scale + 0.2).toFixed(1)))}
+              <span className="text-xs font-bold text-gray-600 w-10 text-center">
+                {Math.round(scale * 100)}%
+              </span>
+              <button onClick={() => zoom(+0.2)}
                 className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-white text-gray-600 transition-all">
                 <ZoomIn className="w-3.5 h-3.5" />
               </button>
@@ -227,9 +240,9 @@ function BacaPDFContent() {
           )}
 
           <button onClick={loadPDF}
-            className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-gray-100 text-gray-600"
-            title="Muat ulang">
-            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+            title="Muat ulang"
+            className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-gray-100 text-gray-600">
+            <RefreshCw className={`w-4 h-4 ${status === 'loading' ? 'animate-spin' : ''}`} />
           </button>
 
           <a href="/katalog"
@@ -237,49 +250,50 @@ function BacaPDFContent() {
             style={{ background: 'linear-gradient(135deg, #1B4332, #2D6A4F)' }}>
             <BookOpen className="w-3.5 h-3.5" /> Katalog
           </a>
+
           <a href={rawUrl} target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold"
             style={{ background: 'linear-gradient(135deg, #E8BE5A, #D4A017)', color: '#1B4332' }}>
             <Download className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Unduh PDF</span>
+            <span className="hidden sm:inline">Unduh</span>
           </a>
         </div>
       </div>
 
-      {/* ── Main viewer ── */}
-      <div className="flex-1 overflow-auto relative">
+      {/* ── Viewer ── */}
+      <div className="flex-1 overflow-auto">
 
-        {/* Loading state */}
-        {isLoading && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 z-10"
-            style={{ background: '#404040' }}>
+        {/* Loading */}
+        {status === 'loading' && (
+          <div className="flex flex-col items-center justify-center h-full gap-5">
             <div className="relative w-16 h-16">
               <div className="absolute inset-0 rounded-full border-4 border-gray-600" />
-              <div className="absolute inset-0 rounded-full border-4 border-t-gold-400 animate-spin" />
+              <div className="absolute inset-0 rounded-full border-4 border-t-yellow-400 animate-spin" />
             </div>
             <div className="text-center">
               <p className="text-white text-sm font-medium">
-                {!pdfjsReady ? 'Memuat PDF.js...' : sourceLabel || 'Memuat PDF...'}
+                {!ready ? 'Memuat PDF.js...' : info || 'Membuka PDF...'}
               </p>
-              <p className="text-gray-400 text-xs mt-1">Harap tunggu sebentar</p>
+              <p className="text-gray-400 text-xs mt-1">Harap tunggu</p>
             </div>
           </div>
         )}
 
-        {/* Error state */}
+        {/* Error */}
         {status === 'error' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 px-6 text-center z-10"
-            style={{ background: '#2a2a2a' }}>
-            <div className="w-20 h-20 rounded-3xl bg-amber-900/30 border-2 border-amber-700 flex items-center justify-center">
+          <div className="flex flex-col items-center justify-center h-full gap-5 px-6 text-center">
+            <div className="w-20 h-20 rounded-3xl flex items-center justify-center"
+              style={{ background: 'rgba(251,191,36,0.15)', border: '2px solid rgba(251,191,36,0.3)' }}>
               <span className="text-4xl">📄</span>
             </div>
             <div>
               <h3 className="font-display font-bold text-xl text-white mb-2">
-                Tidak Dapat Membuka PDF
+                PDF Tidak Dapat Dibuka Online
               </h3>
               <p className="text-gray-400 text-sm max-w-sm leading-relaxed">{errorMsg}</p>
-              <p className="text-gray-500 text-xs mt-2 max-w-xs">
-                Server sumber membatasi akses langsung. Silakan unduh file untuk dibaca secara offline.
+              <p className="text-gray-500 text-xs mt-3 max-w-xs">
+                💡 Tip: Buku berformat <strong className="text-yellow-400">EPUB</strong> dapat
+                dibaca langsung online tanpa masalah ini.
               </p>
             </div>
             <div className="flex flex-col sm:flex-row gap-3">
@@ -298,58 +312,43 @@ function BacaPDFContent() {
                 ← Kembali
               </button>
             </div>
-            <p className="text-xs text-gray-500">
-              💡 Buku EPUB dapat dibaca langsung online tanpa masalah ini.
-            </p>
           </div>
         )}
 
-        {/* Canvas PDF renderer */}
-        <div className="flex justify-center py-4 px-2 min-h-full">
+        {/* Canvas */}
+        <div
+          className="flex justify-center py-6 px-4 min-h-full"
+          style={{ display: status === 'done' ? 'flex' : 'none' }}
+        >
           <canvas
             ref={canvasRef}
-            className="shadow-2xl max-w-full"
-            style={{
-              display: status === 'done' ? 'block' : 'none',
-              background: 'white',
-              borderRadius: 4,
-            }}
+            className="shadow-2xl max-w-full h-auto"
+            style={{ background: 'white', borderRadius: 2 }}
           />
         </div>
       </div>
 
-      {/* ── Bottom navigation bar ── */}
-      {status === 'done' && totalPages > 0 && (
-        <div className="flex items-center justify-between px-4 py-2.5 flex-shrink-0 bg-gray-800 border-t border-gray-700">
-          <button
-            onClick={() => goToPage(page - 1)}
-            disabled={page <= 1}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium text-white disabled:opacity-30 transition-all hover:bg-gray-700"
-          >
-            <ChevronLeft className="w-4 h-4" /> Sebelumnya
+      {/* ── Bottom nav ── */}
+      {status === 'done' && totalPages > 1 && (
+        <div className="flex items-center justify-between px-4 py-2 flex-shrink-0 border-t"
+          style={{ background: '#2a2a2a', borderColor: '#444' }}>
+          <button onClick={() => goToPage(page - 1)} disabled={page <= 1}
+            className="flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-medium text-white disabled:opacity-30 hover:bg-white/10 transition-all">
+            <ChevronLeft className="w-4 h-4" /> Prev
           </button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 text-sm text-gray-300">
             <input
-              type="number"
-              value={page}
-              min={1}
-              max={totalPages}
-              onChange={(e) => {
-                const v = parseInt(e.target.value)
-                if (v >= 1 && v <= totalPages) goToPage(v)
-              }}
-              className="w-12 text-center text-sm font-bold bg-gray-700 text-white rounded-lg py-1.5 outline-none border border-gray-600 focus:border-gold-400"
+              type="number" value={page} min={1} max={totalPages}
+              onChange={(e) => { const v = parseInt(e.target.value); if (v >= 1 && v <= totalPages) goToPage(v) }}
+              className="w-12 text-center font-bold bg-gray-700 text-white rounded-lg py-1 outline-none border border-gray-600 focus:border-yellow-400"
             />
-            <span className="text-gray-400 text-sm">/ {totalPages}</span>
+            <span className="opacity-50">/ {totalPages}</span>
           </div>
 
-          <button
-            onClick={() => goToPage(page + 1)}
-            disabled={page >= totalPages}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium text-white disabled:opacity-30 transition-all hover:bg-gray-700"
-          >
-            Berikutnya <ChevronRight className="w-4 h-4" />
+          <button onClick={() => goToPage(page + 1)} disabled={page >= totalPages}
+            className="flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-medium text-white disabled:opacity-30 hover:bg-white/10 transition-all">
+            Next <ChevronRight className="w-4 h-4" />
           </button>
         </div>
       )}
@@ -360,8 +359,8 @@ function BacaPDFContent() {
 export default function BacaPDFPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center" style={{ background: '#404040' }}>
-        <Loader2 className="w-8 h-8 animate-spin text-gold-400" />
+      <div className="min-h-screen flex items-center justify-center" style={{ background: '#323639' }}>
+        <Loader2 className="w-8 h-8 animate-spin text-yellow-400" />
       </div>
     }>
       <BacaPDFContent />
